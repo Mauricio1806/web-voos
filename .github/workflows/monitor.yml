@@ -1,0 +1,71 @@
+name: Monitor de Voos
+
+on:
+  schedule:
+    # Toda segunda às 11:00 UTC (08:00 BRT)
+    - cron: "0 11 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  run-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write .env from secrets
+        run: |
+          cat > .env <<EOF
+          SERPAPI_KEY=${{ secrets.SERPAPI_KEY }}
+          EMAIL_REMETENTE=${{ secrets.EMAIL_REMETENTE }}
+          EMAIL_SENHA=${{ secrets.EMAIL_SENHA }}
+          EMAIL_DESTINATARIO=${{ secrets.EMAIL_DESTINATARIO }}
+          PRECO_ALERTA=${{ secrets.PRECO_ALERTA }}
+          EOF
+
+      - name: Run monitor (one shot)
+        env:
+          ONE_SHOT: "1"
+        run: python monitor_voos.py
+
+      - name: Commit updated report and database
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add report_voos.html historico.db
+          git diff --staged --quiet || git commit -m "chore: atualiza report semanal de voos [skip ci]"
+          git push
+
+  deploy-pages:
+    needs: run-monitor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+monitor_voos.log
+.venv/
+venv/

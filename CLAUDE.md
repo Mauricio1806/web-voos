@@ -30,6 +30,9 @@
 - Agenda: toda segunda 08:00
 - Total chamadas/run: 3 destinos × 17 datas × 2 classes = **102 chamadas**
 
+## Margem de bagagem despachada (23kg)
+SerpApi retorna apenas a tarifa Light (sem bagagem). Para estimar o preço final com bagagem, adicionamos uma margem por companhia em MARGEM_BAGAGEM_ECO. Executiva normalmente já inclui bagagem, então margem = 0.
+
 ## SQLite — schema `voos`
 id, run_date, data_viagem, destino, **classe**, **companhia**, preco, dur_min,
 partida, chegada, paradas, escalas (json), classif, score,

@@ -78,16 +78,19 @@ filtrado = df_run[
 ]
 
 # ─── KPIs ─────────────────────────────────────────────────────────────────────
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 if not filtrado.empty:
     melhor = filtrado.loc[filtrado["score"].idxmin()]
-    c1.metric("🏆 Melhor oferta", f"R$ {melhor['preco']:,.0f}",
+    preco_melhor = melhor["preco_com_bagagem"] if melhor["classe"] == "Econômica" and "preco_com_bagagem" in melhor else melhor["preco"]
+    c1.metric("🏆 Melhor oferta", f"R$ {preco_melhor:,.0f}",
               delta=f"{melhor['companhia']} · {melhor['destino']}", delta_color="off")
     eco = filtrado[filtrado["classe"] == "Econômica"]
     exe = filtrado[filtrado["classe"] == "Executiva"]
     c2.metric("💰 Menor Econômica", f"R$ {eco['preco'].min():,.0f}" if not eco.empty else "—")
-    c3.metric("💎 Menor Executiva", f"R$ {exe['preco'].min():,.0f}" if not exe.empty else "—")
-    c4.metric("📊 Total ofertas", len(filtrado))
+    c3.metric("💼 Menor Eco c/ 23kg",
+              f"R$ {eco['preco_com_bagagem'].min():,.0f}" if not eco.empty and "preco_com_bagagem" in eco.columns else "—")
+    c4.metric("💎 Menor Executiva", f"R$ {exe['preco'].min():,.0f}" if not exe.empty else "—")
+    c5.metric("📊 Total ofertas", len(filtrado))
 
 # ─── Comparativo ──────────────────────────────────────────────────────────────
 st.subheader("📊 Comparativo com a Semana Anterior")
@@ -150,16 +153,25 @@ else:
             df_cia["dur"] = df_cia["dur_min"].apply(lambda m: f"{m//60}h{m%60:02d}")
             df_cia["data_str"] = df_cia["data_viagem"].dt.strftime("%d/%m")
 
-            # Pivot
-            pivot = df_cia.pivot_table(
+            # Pivot — preço base e preço com bagagem lado a lado
+            pivot_preco = df_cia.pivot_table(
                 index=["data_str", "destino", "dur", "paradas", "partida_h", "chegada_h", "classif"],
                 columns="classe", values="preco", aggfunc="min"
-            ).reset_index()
+            ).rename(columns={"Econômica": "Econômica (base)", "Executiva": "Executiva (base)"})
+
+            pivot_bag = df_cia.pivot_table(
+                index=["data_str", "destino", "dur", "paradas", "partida_h", "chegada_h", "classif"],
+                columns="classe", values="preco_com_bagagem", aggfunc="min"
+            ).rename(columns={"Econômica": "Econômica (c/ 23kg)", "Executiva": "Executiva (c/ 23kg)"})
+
+            pivot = pivot_preco.join(pivot_bag, how="left").reset_index()
 
             # Link da companhia (pega o primeiro url_companhia disponível)
             link_cia = df_cia["url_companhia"].iloc[0] if not df_cia["url_companhia"].empty else ""
 
-            cols_show = ["data_str", "destino", "Econômica", "Executiva",
+            cols_show = ["data_str", "destino",
+                          "Econômica (base)", "Econômica (c/ 23kg)",
+                          "Executiva (base)", "Executiva (c/ 23kg)",
                           "dur", "paradas", "partida_h", "chegada_h", "classif"]
             cols_show = [c for c in cols_show if c in pivot.columns]
             pivot = pivot[cols_show].rename(columns={
@@ -170,10 +182,9 @@ else:
             })
 
             col_cfg = {}
-            if "Econômica" in pivot.columns:
-                col_cfg["Econômica"] = st.column_config.NumberColumn(format="R$ %.2f")
-            if "Executiva" in pivot.columns:
-                col_cfg["Executiva"] = st.column_config.NumberColumn(format="R$ %.2f")
+            for col in ("Econômica (base)", "Econômica (c/ 23kg)", "Executiva (base)", "Executiva (c/ 23kg)"):
+                if col in pivot.columns:
+                    col_cfg[col] = st.column_config.NumberColumn(format="R$ %.2f")
 
             st.dataframe(pivot, use_container_width=True, hide_index=True, column_config=col_cfg)
 

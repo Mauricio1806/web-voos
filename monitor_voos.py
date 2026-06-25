@@ -47,6 +47,21 @@ COMPANHIAS = {
     "Outras":       {"codes": [],                             "site": ""},
 }
 
+# Margem estimada para tarifa Light → c/ 23kg de bagagem despachada (SerpApi só retorna a Light)
+MARGEM_BAGAGEM_ECO = {
+    "LATAM":      820,
+    "TAP":        280,
+    "Iberia":     350,
+    "Air Europa": 300,
+    "Air France": 400,
+    "KLM":        400,
+    "Lufthansa":  450,
+    "British":    380,
+    "Outras":     400,
+}
+# Executiva: business class typically already includes 23kg baggage
+MARGEM_BAGAGEM_EXEC = 0
+
 MOEDA          = "BRL"
 PRECO_ALERTA   = float(os.getenv("PRECO_ALERTA", 15000))
 MAX_PARADAS    = int(os.getenv("MAX_PARADAS", 2))
@@ -91,6 +106,16 @@ def init_db():
         )
     """)
     conn.commit()
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(voos)").fetchall()]
+    for coluna, tipo in (("preco_com_bagagem", "REAL"), ("margem_bagagem", "REAL")):
+        if coluna not in cols:
+            try:
+                conn.execute(f"ALTER TABLE voos ADD COLUMN {coluna} {tipo}")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
     return conn
 
 def salvar_voo(conn, run_date, v):
@@ -98,14 +123,15 @@ def salvar_voo(conn, run_date, v):
         INSERT INTO voos
         (run_date, data_viagem, destino, classe, companhia, preco, dur_min,
          partida, chegada, paradas, escalas, classif, score,
-         url_companhia, url_google, url_kayak)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         url_companhia, url_google, url_kayak, preco_com_bagagem, margem_bagagem)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         run_date, v["data"], v["destino"], v["classe"], v["companhia"],
         v["preco"], v["dur_min"], v["partida"], v["chegada"],
         v["paradas"], json.dumps(v["escalas"], ensure_ascii=False),
         v["classif"], v["score"],
         v["url_companhia"], v["url_google"], v["url_kayak"],
+        v["preco_com_bagagem"], v["margem_bagagem"],
     ))
     conn.commit()
 
@@ -229,10 +255,17 @@ def processar(voo, destino, data, classe_label):
 
         escalas = [f"{l['name']} ({dur_fmt(l['duration'])})" for l in voo.get("layovers", [])]
 
+        if classe_label == "Econômica":
+            margem = MARGEM_BAGAGEM_ECO.get(marca, 400)
+        else:
+            margem = MARGEM_BAGAGEM_EXEC
+        preco_com_bagagem = preco + margem
+
         return {
             "data": data, "destino": destino, "classe": classe_label,
             "companhia": marca, "cia_raw": cia_raw,
             "preco": preco, "dur_min": dur, "dur_fmt": dur_fmt(dur),
+            "preco_com_bagagem": preco_com_bagagem, "margem_bagagem": margem,
             "partida": partida, "chegada": chegada,
             "paradas": paradas, "escalas": escalas,
             "classif": cl, "score": score,
@@ -313,6 +346,8 @@ def gerar_html(voos_por_companhia, comparativo):
                 )
                 preco_eco_html = f"""
                 <b style="color:#1d4ed8;font-size:16px">R$ {eco['preco']:,.2f}</b><br>
+                <span style="color:#22c55e;font-weight:bold;font-size:12px">R$ {eco['preco_com_bagagem']:,.2f}</span>
+                <span style="color:#9ca3af;font-size:10px"> c/ 23kg</span><br>
                 <span style="color:{cmp_cor};font-weight:bold;font-size:11px">{cmp_txt}</span>
                 <span style="color:#9ca3af;font-size:10px"> ant: {cmp_ant}</span><br>
                 <a href="{eco['url_companhia']}" target="_blank" style="font-size:11px;color:#1a73e8">→ {cia}</a> ·
@@ -325,7 +360,9 @@ def gerar_html(voos_por_companhia, comparativo):
                     exe["preco"], comparativo.get((exe["data"], exe["destino"], "Executiva", cia))
                 )
                 preco_exe_html = f"""
-                <b style="color:#7c3aed;font-size:16px">R$ {exe['preco']:,.2f}</b><br>
+                <b style="color:#7c3aed;font-size:16px">R$ {exe['preco']:,.2f}</b>
+                <span style="background:#dcfce7;color:#16a34a;font-size:10px;font-weight:bold;
+                             border-radius:4px;padding:1px 5px;margin-left:4px">✓ inclui 23kg</span><br>
                 <span style="color:{cmp_cor};font-weight:bold;font-size:11px">{cmp_txt}</span>
                 <span style="color:#9ca3af;font-size:10px"> ant: {cmp_ant}</span><br>
                 <a href="{exe['url_companhia']}" target="_blank" style="font-size:11px;color:#1a73e8">→ {cia}</a> ·
@@ -362,8 +399,8 @@ def gerar_html(voos_por_companhia, comparativo):
                 <thead><tr style="background:#1e3a5f;color:white">
                     <th style="padding:10px;text-align:left">Data</th>
                     <th style="padding:10px;text-align:left">Destino</th>
-                    <th style="padding:10px;text-align:left">Econômica</th>
-                    <th style="padding:10px;text-align:left">Executiva</th>
+                    <th style="padding:10px;text-align:left">Econômica<br><span style="font-size:10px;color:#9ca3af">base · c/ 23kg</span></th>
+                    <th style="padding:10px;text-align:left">Executiva<br><span style="font-size:10px;color:#9ca3af">base · c/ 23kg</span></th>
                     <th style="padding:10px;text-align:left">Duração</th>
                     <th style="padding:10px;text-align:left">Paradas</th>
                     <th style="padding:10px;text-align:left">Conexões</th>
@@ -376,12 +413,14 @@ def gerar_html(voos_por_companhia, comparativo):
     melhor_card = ""
     if melhor_global:
         m = melhor_global
+        preco_destaque = m["preco_com_bagagem"] if m["classe"] == "Econômica" else m["preco"]
+        sufixo_preco = " <span style='font-size:11px;color:#16a34a'>(c/ 23kg)</span>" if m["classe"] == "Econômica" else ""
         melhor_card = f"""
         <div style="background:#ecfccb;border:2px solid #84cc16;border-radius:8px;padding:16px;margin-bottom:24px">
             <h3 style="margin:0 0 8px 0">🏅 MELHOR OFERTA GLOBAL</h3>
             <b>{m['companhia']}</b> · SSA→{m['destino']} ({DESTINOS[m['destino']]}) ·
             <b>{m['classe']}</b> ·
-            <b style="color:#1d4ed8;font-size:18px">R$ {m['preco']:,.2f}</b> ·
+            <b style="color:#1d4ed8;font-size:18px">R$ {preco_destaque:,.2f}</b>{sufixo_preco} ·
             {m['dur_fmt']} · {m['paradas']} parada(s) ·
             Chegada {m['chegada'][-5:]}
             <span style="color:{cor_classif(m['classif'])};font-weight:bold">[{m['classif']}]</span><br>
@@ -410,6 +449,13 @@ a {{ text-decoration:none }} a:hover {{ text-decoration:underline }}
 
 <h1>✈️ Monitor SSA → Granada / Alicante / Málaga (Nerja)</h1>
 <p style="color:#6b7280">Outubro 2026: {DATAS[0]} a {DATAS[-1]} | Atualizado: <b>{agora}</b> | Alerta: R$ {PRECO_ALERTA:,.2f}</p>
+
+<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:6px;padding:10px;margin:12px 0;font-size:12px;color:#78350f">
+ℹ️ <b>Sobre os preços:</b> O valor "base" é a tarifa Light/Discount (mochila de mão apenas).
+A coluna "c/ 23kg" estima o preço com bagagem despachada de 23kg adicionando a média da diferença Light→Standard de cada companhia.
+Executiva/Business já inclui 23kg (geralmente 2 malas).
+Confirme sempre no site da companhia antes de comprar.
+</div>
 
 {melhor_card}
 

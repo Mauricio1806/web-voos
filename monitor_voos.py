@@ -4,7 +4,7 @@ Roda semanalmente, busca por companhia + classe (econômica + executiva),
 gera report HTML com abas por companhia, links diretos, envia email.
 """
 
-import os, json, time, smtplib, sqlite3, logging, random, requests, schedule
+import os, json, re, time, smtplib, sqlite3, logging, schedule
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -34,7 +34,7 @@ DATAS = [
     "2026-10-30","2026-10-31",
 ]
 
-# travel_class do SerpApi: 1=Economy, 2=Premium economy, 3=Business, 4=First
+# travel_class code: 1=Economy, 2=Premium economy, 3=Business, 4=First (mapeado para seat do fast-flights)
 CLASSES = [
     {"code": 1, "label": "Econômica"},
     {"code": 3, "label": "Executiva"},
@@ -60,7 +60,7 @@ COMPANHIAS = {
     "Outras":       {"codes": [],                                         "site": ""},
 }
 
-# Margem estimada para tarifa Light → c/ 23kg de bagagem despachada (SerpApi só retorna a Light)
+# Margem estimada para tarifa Light → c/ 23kg de bagagem despachada (fast-flights só retorna a Light)
 MARGEM_BAGAGEM_ECO = {
     "LATAM":      820,
     "TAP":        280,
@@ -82,7 +82,6 @@ MARGEM_BAGAGEM_ECO = {
 # Executiva: business class typically already includes 23kg baggage
 MARGEM_BAGAGEM_EXEC = 0
 
-MOEDA          = "BRL"
 PRECO_ALERTA   = float(os.getenv("PRECO_ALERTA", 15000))
 MAX_PARADAS    = int(os.getenv("MAX_PARADAS", 2))
 DURACAO_MAX_HORAS = 24  # voos acima de 24h são descartados
@@ -174,12 +173,6 @@ def buscar_run_anterior(conn, run_atual):
 
 
 # ─── Utilitários ──────────────────────────────────────────────────────────────
-def hora(dt):
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
-        try: return datetime.strptime(dt, fmt).hour
-        except: pass
-    return -1
-
 def dur_fmt(m): return f"{m//60}h{m%60:02d}min"
 
 def classificar(h):
@@ -225,72 +218,126 @@ def gerar_url_companhia(marca, origem, destino, data):
     return base
 
 
-# ─── Busca SerpApi ────────────────────────────────────────────────────────────
-def buscar(destino, data, travel_class):
-    key = os.getenv("SERPAPI_KEY")
-    if not key:
-        log.error("SERPAPI_KEY ausente")
-        return []
-    params = {
-        "engine":        "google_flights",
-        "departure_id":  ORIGEM,
-        "arrival_id":    destino,
-        "outbound_date": data,
-        "currency":      MOEDA,
-        "type":          "2",
-        "travel_class":  travel_class,
-        "api_key":       key,
-    }
-    for t in range(1, API_RETRIES + 1):
+# ─── Busca fast-flights (Google Flights via Protobuf, sem API key/quota) ─────
+def buscar(destino, data, travel_class_code):
+    from fast_flights import FlightData, Passengers, create_filter, get_flights_from_filter
+
+    seat_map = {1: "economy", 2: "premium-economy", 3: "business", 4: "first"}
+    seat = seat_map.get(travel_class_code, "economy")
+
+    for tentativa in range(1, API_RETRIES + 1):
         try:
-            r = requests.get("https://serpapi.com/search", params=params, timeout=20)
-            d = r.json()
-            if r.status_code != 200 or "error" in d:
-                log.warning("Tentativa %d falhou: %s", t, d.get("error", "?"))
-                if t == API_RETRIES: return []
-            else:
-                return d.get("best_flights", []) + d.get("other_flights", [])
+            filtro = create_filter(
+                flight_data=[FlightData(
+                    date=data,
+                    from_airport=ORIGEM,
+                    to_airport=destino,
+                )],
+                trip="one-way",
+                seat=seat,
+                passengers=Passengers(adults=1),
+            )
+            resultado = get_flights_from_filter(filtro)
+            if not resultado or not resultado.flights:
+                log.info("Sem voos: %s %s %s", destino, data, seat)
+                return []
+            return resultado.flights
         except Exception as e:
-            log.warning("Erro tentativa %d: %s", t, e)
-        if t < API_RETRIES:
-            time.sleep(1.0 * (2 ** (t-1)) + random.random())
+            log.warning("Tentativa %d/%d falhou: %s", tentativa, API_RETRIES, e)
+            if tentativa < API_RETRIES:
+                time.sleep(1.5 * tentativa)
     return []
 
 
 def processar(voo, destino, data, classe_label):
     try:
-        segs = voo["flights"]
-        preco = float(voo["price"])
-        dur = int(voo["total_duration"])
-        paradas = len(segs) - 1
-        if paradas > MAX_PARADAS: return None
-        if dur > DURACAO_MAX_HORAS * 60: return None
+        # fast-flights Flight object fields (fast-flights==2.1):
+        # voo.name = airline name
+        # voo.departure = "11:45 PM on Tue, Oct 20"
+        # voo.arrival = "5:00 PM on Wed, Oct 21"
+        # voo.arrival_time_ahead = "" | "+1" | "+2" (dias além da partida)
+        # voo.duration = duration string e.g. "16 hr 30 min"
+        # voo.stops = int number of stops
+        # voo.price = price string e.g. "R$2219"
 
-        partida = segs[0]["departure_airport"]["time"]
-        chegada = segs[-1]["arrival_airport"]["time"]
-        cia_raw = segs[0].get("airline", "")
-        marca   = identificar_companhia(cia_raw)
+        preco_str = str(voo.price).replace("BRL", "").replace(",", "").replace(".", "").strip()
+        try:
+            preco = float(''.join(c for c in preco_str if c.isdigit() or c == '.'))
+        except:
+            return None
 
-        h = hora(chegada)
-        cl, pen = classificar(h)
+        if preco <= 0:
+            return None
+
+        dur_str = str(voo.duration).lower()
+        dur_min = 0
+        h_match = re.search(r'(\d+)\s*hr', dur_str)
+        m_match = re.search(r'(\d+)\s*min', dur_str)
+        if h_match:
+            dur_min += int(h_match.group(1)) * 60
+        if m_match:
+            dur_min += int(m_match.group(1))
+        if dur_min == 0:
+            return None
+
+        if dur_min > DURACAO_MAX_HORAS * 60:
+            return None
+
+        # fast-flights retorna "Unknown" (string) quando não consegue extrair o nº de paradas do HTML
+        try:
+            paradas = int(voo.stops)
+        except (TypeError, ValueError):
+            return None
+        if paradas > MAX_PARADAS:
+            return None
+
+        # fast-flights retorna "5:00 PM on Wed, Oct 21" — extrai só a hora antes de " on "
+        arr_str = str(voo.arrival).split(" on ")[0].strip()
+        dep_str = str(voo.departure).split(" on ")[0].strip()
+
+        hora_cheg = -1
+        try:
+            arr_dt = datetime.strptime(arr_str, "%I:%M %p")
+            hora_cheg = arr_dt.hour
+        except:
+            pass
+
+        try:
+            dep_dt = datetime.strptime(dep_str, "%I:%M %p")
+            partida_fmt = dep_dt.strftime("%H:%M")
+        except:
+            partida_fmt = dep_str
+
+        try:
+            arr_dt2 = datetime.strptime(arr_str, "%I:%M %p")
+            chegada_fmt = arr_dt2.strftime("%H:%M")
+        except:
+            chegada_fmt = arr_str
+
+        ahead = str(getattr(voo, "arrival_time_ahead", "") or "").strip()
+        if ahead == "+1":
+            chegada_fmt += " (+1 dia)"
+        elif ahead:
+            chegada_fmt += f" ({ahead} dias)"
+
+        cia_raw = str(voo.name) if voo.name else "Desconhecida"
+        marca = identificar_companhia(cia_raw)
+
+        cl, pen = classificar(hora_cheg)
         terra = PENALIDADE_TERRESTRE.get(destino, 0)
-        score = dur + pen + (paradas * 120) + terra
+        score = dur_min + pen + (paradas * 120) + terra
 
-        escalas = [f"{l['name']} ({dur_fmt(l['duration'])})" for l in voo.get("layovers", [])]
-
-        if classe_label == "Econômica":
-            margem = MARGEM_BAGAGEM_ECO.get(marca, 400)
-        else:
-            margem = MARGEM_BAGAGEM_EXEC
+        margem = MARGEM_BAGAGEM_ECO.get(marca, 400) if classe_label == "Econômica" else MARGEM_BAGAGEM_EXEC
         preco_com_bagagem = preco + margem
 
         return {
             "data": data, "destino": destino, "classe": classe_label,
             "companhia": marca, "cia_raw": cia_raw,
-            "preco": preco, "dur_min": dur, "dur_fmt": dur_fmt(dur),
-            "preco_com_bagagem": preco_com_bagagem, "margem_bagagem": margem,
-            "partida": partida, "chegada": chegada,
-            "paradas": paradas, "escalas": escalas,
+            "preco": preco, "preco_com_bagagem": preco_com_bagagem,
+            "margem_bagagem": margem,
+            "dur_min": dur_min, "dur_fmt": dur_fmt(dur_min),
+            "partida": partida_fmt, "chegada": chegada_fmt,
+            "paradas": paradas, "escalas": [],
             "classif": cl, "score": score,
             "penalidade_terrestre": terra,
             "descartado": pen >= 9999,
@@ -506,7 +553,7 @@ function showTab(id) {{
 </script>
 
 <p style="color:#9ca3af;font-size:11px;margin-top:24px">
-Dados via SerpApi/Google Flights. Preços e disponibilidade na companhia podem diferir — confirme sempre antes de comprar.
+Dados via Google Flights (fast-flights). Preços e disponibilidade na companhia podem diferir — confirme sempre antes de comprar.
 </p>
 </body></html>"""
 

@@ -36,6 +36,10 @@ jobs:
           ONE_SHOT: '1'
         run: python monitor_voos.py
 
+      - name: Show monitor log
+        if: always()
+        run: cat monitor_voos.log || true
+
       - name: Commit updated report and database
         run: |
           git config user.name "github-actions[bot]"

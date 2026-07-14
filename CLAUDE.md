@@ -12,7 +12,7 @@
 - `.env` — credenciais
 
 ## Estrutura atual (CRÍTICO — não simplificar)
-- **Abas por companhia** (LATAM, TAP, Iberia, Air Europa, Lufthansa, Air France, KLM, British, Outras)
+- **Abas por companhia** (LATAM, TAP, Iberia, Air Europa, Lufthansa, Air France, KLM, British, Turkish, Emirates, Qatar, Avianca, Copa, Swiss, ITA Airways, Outras)
 - **Cada linha**: data + destino + preço Econômica + preço Executiva lado a lado
 - **Links diretos** para o site da própria companhia já com a busca preenchida (deep links)
 - **NÃO usar mais `checked_bags`** — não muda preço, só atrapalha (era bug antigo)
@@ -25,8 +25,10 @@
 - Período: 2026-10-15 a 2026-10-31 (17 datas)
 - Classes: Econômica + Executiva
 - MAX_PARADAS: 2
+- DURACAO_MAX_HORAS: 24 (voos acima de 24h são descartados)
 - Filtro chegada: 08h-21h (ideal 10h-18h)
-- Score: `dur_min + penalidade_horario + (paradas × 120)`
+- PENALIDADE_TERRESTRE por aeroporto (min de deslocamento até o destino final): GRX 0 · ALC 0 · AGP 75 (ônibus até Nerja)
+- Score: `dur_min + penalidade_horario + (paradas × 120) + penalidade_terrestre`
 - Agenda: toda segunda 08:00
 - Total chamadas/run: 3 destinos × 17 datas × 2 classes = **102 chamadas**
 
@@ -38,9 +40,11 @@ id, run_date, data_viagem, destino, **classe**, **companhia**, preco, dur_min,
 partida, chegada, paradas, escalas (json), classif, score,
 **url_companhia**, url_google, url_kayak
 
-## Companhias mapeadas (keywords no nome da airline retornado pela SerpApi)
+## Companhias mapeadas (16, keywords no nome da airline retornado pela SerpApi)
 LATAM (latam/tam) · TAP (tap) · Iberia (iberia) · Air Europa (air europa) ·
-Lufthansa (lufthansa) · Air France (air france) · KLM (klm) · British (british) · Outras (fallback)
+Lufthansa (lufthansa) · Air France (air france) · KLM (klm) · British (british) ·
+Turkish (turkish) · Emirates (emirates) · Qatar (qatar) · Avianca (avianca) ·
+Copa (copa) · Swiss (swiss) · ITA Airways (ita/alitalia) · Outras (fallback)
 
 ## .env
 ```

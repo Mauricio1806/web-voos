@@ -21,6 +21,12 @@ DESTINOS = {
     "AGP": "Málaga (Nerja)",
 }
 
+PENALIDADE_TERRESTRE = {
+    "GRX": 0,    # Granada — aeroporto local, sem deslocamento
+    "ALC": 0,    # Alicante — aeroporto local, sem deslocamento
+    "AGP": 75,   # Málaga — 75 min de ônibus até Nerja
+}
+
 DATAS = [
     "2026-10-15","2026-10-16","2026-10-17","2026-10-18","2026-10-19",
     "2026-10-20","2026-10-21","2026-10-22","2026-10-23","2026-10-24",
@@ -36,15 +42,22 @@ CLASSES = [
 
 # Companhias alvo + links diretos
 COMPANHIAS = {
-    "LATAM":        {"codes": ["LA", "JJ", "LATAM"],         "site": "https://www.latam.com/pt_br/"},
-    "TAP":          {"codes": ["TP", "TAP"],                  "site": "https://www.flytap.com/pt-br"},
-    "Iberia":       {"codes": ["IB", "Iberia"],               "site": "https://www.iberia.com/br/"},
-    "Air Europa":   {"codes": ["UX", "Air Europa"],           "site": "https://www.aireuropa.com/br/pt"},
-    "Lufthansa":    {"codes": ["LH", "Lufthansa"],            "site": "https://www.lufthansa.com/br/pt"},
-    "Air France":   {"codes": ["AF", "Air France"],           "site": "https://www.airfrance.com.br"},
-    "KLM":          {"codes": ["KL", "KLM"],                  "site": "https://www.klm.com.br"},
-    "British":      {"codes": ["BA", "British Airways"],      "site": "https://www.britishairways.com/pt-br"},
-    "Outras":       {"codes": [],                             "site": ""},
+    "LATAM":        {"codes": ["LA", "JJ", "LATAM", "TAM"],              "site": "https://www.latam.com/pt_br/"},
+    "TAP":          {"codes": ["TP", "TAP"],                              "site": "https://www.flytap.com/pt-br"},
+    "Iberia":       {"codes": ["IB", "Iberia"],                          "site": "https://www.iberia.com/br/"},
+    "Air Europa":   {"codes": ["UX", "Air Europa"],                      "site": "https://www.aireuropa.com/br/pt"},
+    "Lufthansa":    {"codes": ["LH", "Lufthansa"],                       "site": "https://www.lufthansa.com/br/pt"},
+    "Air France":   {"codes": ["AF", "Air France"],                      "site": "https://www.airfrance.com.br"},
+    "KLM":          {"codes": ["KL", "KLM"],                             "site": "https://www.klm.com.br"},
+    "British":      {"codes": ["BA", "British Airways"],                 "site": "https://www.britishairways.com/pt-br"},
+    "Turkish":      {"codes": ["TK", "Turkish Airlines"],                "site": "https://www.turkishairlines.com/pt-br"},
+    "Emirates":     {"codes": ["EK", "Emirates"],                        "site": "https://www.emirates.com/br/portuguese/"},
+    "Qatar":        {"codes": ["QR", "Qatar Airways"],                   "site": "https://www.qatarairways.com/pt-br"},
+    "Avianca":      {"codes": ["AV", "Avianca"],                         "site": "https://www.avianca.com/br/pt/"},
+    "Copa":         {"codes": ["CM", "Copa Airlines"],                   "site": "https://www.copaair.com/pt-br/"},
+    "Swiss":        {"codes": ["LX", "Swiss"],                           "site": "https://www.swiss.com/br/pt"},
+    "ITA Airways":  {"codes": ["AZ", "ITA", "Alitalia"],                "site": "https://www.itaairways.com"},
+    "Outras":       {"codes": [],                                         "site": ""},
 }
 
 # Margem estimada para tarifa Light → c/ 23kg de bagagem despachada (SerpApi só retorna a Light)
@@ -57,6 +70,13 @@ MARGEM_BAGAGEM_ECO = {
     "KLM":        400,
     "Lufthansa":  450,
     "British":    380,
+    "Turkish":    350,
+    "Emirates":   400,
+    "Qatar":      400,
+    "Avianca":    300,
+    "Copa":       300,
+    "Swiss":      420,
+    "ITA Airways":350,
     "Outras":     400,
 }
 # Executiva: business class typically already includes 23kg baggage
@@ -65,6 +85,7 @@ MARGEM_BAGAGEM_EXEC = 0
 MOEDA          = "BRL"
 PRECO_ALERTA   = float(os.getenv("PRECO_ALERTA", 15000))
 MAX_PARADAS    = int(os.getenv("MAX_PARADAS", 2))
+DURACAO_MAX_HORAS = 24  # voos acima de 24h são descartados
 API_RETRIES    = 3
 DB_FILE        = "historico.db"
 REPORT_HTML    = "report_voos.html"
@@ -243,6 +264,7 @@ def processar(voo, destino, data, classe_label):
         dur = int(voo["total_duration"])
         paradas = len(segs) - 1
         if paradas > MAX_PARADAS: return None
+        if dur > DURACAO_MAX_HORAS * 60: return None
 
         partida = segs[0]["departure_airport"]["time"]
         chegada = segs[-1]["arrival_airport"]["time"]
@@ -251,7 +273,8 @@ def processar(voo, destino, data, classe_label):
 
         h = hora(chegada)
         cl, pen = classificar(h)
-        score = dur + pen + (paradas * 120)
+        terra = PENALIDADE_TERRESTRE.get(destino, 0)
+        score = dur + pen + (paradas * 120) + terra
 
         escalas = [f"{l['name']} ({dur_fmt(l['duration'])})" for l in voo.get("layovers", [])]
 
@@ -269,6 +292,7 @@ def processar(voo, destino, data, classe_label):
             "partida": partida, "chegada": chegada,
             "paradas": paradas, "escalas": escalas,
             "classif": cl, "score": score,
+            "penalidade_terrestre": terra,
             "descartado": pen >= 9999,
             "abaixo_limite": preco < PRECO_ALERTA,
             "url_companhia": gerar_url_companhia(marca, ORIGEM, destino, data),
@@ -304,8 +328,13 @@ def gerar_html(voos_por_companhia, comparativo):
         return "#ef4444"
 
     # Melhor global
+    def preco_real(v):
+        # For economy: use price with baggage (what you actually pay)
+        # For business: price already includes baggage
+        return v.get("preco_com_bagagem", v["preco"]) if v["classe"] == "Econômica" else v["preco"]
+
     todos = [v for vs in voos_por_companhia.values() for v in vs]
-    melhor_global = min(todos, key=lambda x: (x["score"], x["preco"])) if todos else None
+    melhor_global = min(todos, key=lambda x: (x["score"], preco_real(x))) if todos else None
 
     # Botões das abas (uma por companhia que tem voos)
     abas_btns, abas_conteudo = "", ""
@@ -413,14 +442,19 @@ def gerar_html(voos_por_companhia, comparativo):
     melhor_card = ""
     if melhor_global:
         m = melhor_global
-        preco_destaque = m["preco_com_bagagem"] if m["classe"] == "Econômica" else m["preco"]
-        sufixo_preco = " <span style='font-size:11px;color:#16a34a'>(c/ 23kg)</span>" if m["classe"] == "Econômica" else ""
+        if m["classe"] == "Econômica":
+            preco_html = (
+                f"R$ {m['preco']:,.2f} base · "
+                f"<b style=\"color:#1d4ed8;font-size:18px\">R$ {m['preco_com_bagagem']:,.2f} c/ 23kg</b>"
+            )
+        else:
+            preco_html = f"<b style=\"color:#1d4ed8;font-size:18px\">R$ {m['preco']:,.2f}</b> (inclui 23kg)"
         melhor_card = f"""
         <div style="background:#ecfccb;border:2px solid #84cc16;border-radius:8px;padding:16px;margin-bottom:24px">
             <h3 style="margin:0 0 8px 0">🏅 MELHOR OFERTA GLOBAL</h3>
             <b>{m['companhia']}</b> · SSA→{m['destino']} ({DESTINOS[m['destino']]}) ·
             <b>{m['classe']}</b> ·
-            <b style="color:#1d4ed8;font-size:18px">R$ {preco_destaque:,.2f}</b>{sufixo_preco} ·
+            {preco_html} ·
             {m['dur_fmt']} · {m['paradas']} parada(s) ·
             Chegada {m['chegada'][-5:]}
             <span style="color:{cor_classif(m['classif'])};font-weight:bold">[{m['classif']}]</span><br>

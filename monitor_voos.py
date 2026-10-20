@@ -94,6 +94,14 @@ LOG_FILE       = "monitor_voos.log"
 CHEGADA_MIN, CHEGADA_MAX = 8, 21
 CHEGADA_IDEAL_MIN, CHEGADA_IDEAL_MAX = 10, 18
 
+# ─── YVR → SSA (ida e volta, só econômica, menor preço vence) ─────────────────
+YVR_DATAS_IDA = ["2026-12-20", "2026-12-21", "2026-12-22", "2026-12-23"]
+YVR_DATAS_VOLTA = ["2027-01-05", "2027-01-06", "2027-01-07"]
+YVR_PRECO_ALERTA_BRL = 6000
+YVR_PRECO_ALERTA_USD = 1700
+# Preços vêm em BRL; cotação usada para converter o alerta em USD
+YVR_COTACAO_USD_BRL = float(os.getenv("COTACAO_USD_BRL", 5.40))
+
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
@@ -137,6 +145,22 @@ def init_db():
             except sqlite3.OperationalError:
                 pass
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS yvr_voos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_date TEXT NOT NULL,
+            data_ida TEXT NOT NULL,
+            data_volta TEXT NOT NULL,
+            preco REAL NOT NULL,
+            dur_min INTEGER NOT NULL,
+            partida TEXT, chegada TEXT,
+            cia TEXT, paradas INTEGER,
+            classif TEXT, score INTEGER,
+            url_google TEXT, url_kayak TEXT
+        )
+    """)
+    conn.commit()
+
     return conn
 
 def salvar_voo(conn, run_date, v):
@@ -153,6 +177,20 @@ def salvar_voo(conn, run_date, v):
         v["classif"], v["score"],
         v["url_companhia"], v["url_google"], v["url_kayak"],
         v["preco_com_bagagem"], v["margem_bagagem"],
+    ))
+    conn.commit()
+
+
+def salvar_voo_yvr(conn, run_date, v):
+    conn.execute("""
+        INSERT INTO yvr_voos
+        (run_date, data_ida, data_volta, preco, dur_min, partida, chegada,
+         cia, paradas, classif, score, url_google, url_kayak)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        run_date, v["data_ida"], v["data_volta"], v["preco"], v["dur_min"],
+        v["partida"], v["chegada"], v["cia"], v["paradas"],
+        v["classif"], v["score"], v["url_google"], v["url_kayak"],
     ))
     conn.commit()
 
@@ -241,6 +279,10 @@ def buscar(destino, data, travel_class):
         "travel_class":  travel_class,
         "api_key":       key,
     }
+    return chamar_serpapi(params)
+
+
+def chamar_serpapi(params):
     for t in range(1, API_RETRIES + 1):
         try:
             r = requests.get("https://serpapi.com/search", params=params, timeout=20)
@@ -255,6 +297,73 @@ def buscar(destino, data, travel_class):
         if t < API_RETRIES:
             time.sleep(1.0 * (2 ** (t-1)) + random.random())
     return []
+
+
+def buscar_yvr(data_ida, data_volta):
+    """Ida e volta YVR→SSA. A SerpApi retorna os voos de IDA com o preço total da viagem."""
+    key = os.getenv("SERPAPI_KEY")
+    if not key:
+        log.error("SERPAPI_KEY ausente")
+        return []
+    params = {
+        "engine":        "google_flights",
+        "departure_id":  "YVR",
+        "arrival_id":    "SSA",
+        "outbound_date": data_ida,
+        "return_date":   data_volta,
+        "type":          "1",
+        "travel_class":  "1",
+        "currency":      MOEDA,
+        "api_key":       key,
+    }
+    return chamar_serpapi(params)
+
+
+def yvr_abaixo_alerta(preco_brl):
+    return (preco_brl <= YVR_PRECO_ALERTA_BRL or
+            preco_brl / YVR_COTACAO_USD_BRL <= YVR_PRECO_ALERTA_USD)
+
+
+def executar_yvr():
+    """Busca as 12 combinações ida × volta; guarda o voo mais barato de cada uma (chegada 08h-21h em SSA)."""
+    resultados = []
+    print(f"\n  [YVR → SSA ida e volta] {len(YVR_DATAS_IDA) * len(YVR_DATAS_VOLTA)} combinações")
+    for data_ida in YVR_DATAS_IDA:
+        for data_volta in YVR_DATAS_VOLTA:
+            time.sleep(1.2)
+            voos = buscar_yvr(data_ida, data_volta)
+            melhor = None
+            for voo in voos:
+                try:
+                    segs = voo["flights"]
+                    preco = float(voo["price"])
+                    dur = int(voo["total_duration"])
+                    partida = segs[0]["departure_airport"]["time"]
+                    chegada = segs[-1]["arrival_airport"]["time"]
+                except (KeyError, TypeError, ValueError, IndexError):
+                    continue
+                cl, pen = classificar(hora(chegada))
+                if pen >= 9999:
+                    continue  # chegada em SSA fora de 08h-21h
+                if melhor and preco >= melhor["preco"]:
+                    continue
+                paradas = len(segs) - 1
+                melhor = {
+                    "data_ida": data_ida, "data_volta": data_volta,
+                    "preco": preco, "dur_min": dur, "dur_fmt": dur_fmt(dur),
+                    "cia": segs[0].get("airline", ""), "paradas": paradas,
+                    "partida": partida, "chegada": chegada,
+                    "classif": cl, "score": dur + pen + paradas * 120,
+                    "url_google": f"https://www.google.com/travel/flights?q=Voos+YVR+para+SSA+em+{data_ida}+volta+{data_volta}&hl=pt-BR&curr=BRL",
+                    "url_kayak": f"https://www.kayak.com.br/flights/YVR-SSA/{data_ida}/{data_volta}?sort=price_a",
+                }
+            if melhor:
+                resultados.append(melhor)
+                print(f"      {data_ida} → {data_volta} | {melhor['cia']} R$ {melhor['preco']:,.0f}")
+            else:
+                print(f"      {data_ida} → {data_volta} | sem resultados")
+    resultados.sort(key=lambda x: x["preco"])
+    return resultados
 
 
 def processar(voo, destino, data, classe_label):
@@ -319,7 +428,7 @@ def comparar(preco_atual, preco_anterior):
 
 
 # ─── Report HTML com ABAS ─────────────────────────────────────────────────────
-def gerar_html(voos_por_companhia, comparativo):
+def gerar_html(voos_por_companhia, comparativo, yvr_voos=None):
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
 
     def cor_classif(c):
@@ -439,6 +548,74 @@ def gerar_html(voos_por_companhia, comparativo):
             </table>
         </div>"""
 
+    # Aba YVR → SSA (ida e volta, menor preço)
+    if yvr_voos is not None:
+        ativo = "" if companhias_ativas else "active"
+        resumo = f"{len(yvr_voos)} combos"
+        if yvr_voos: resumo += f" · R$ {yvr_voos[0]['preco']:,.0f}"
+        abas_btns += f"""
+        <button class="tab-btn {ativo}" onclick="showTab('tab-yvr')">
+            <b>YVR→SSA</b><br><span style="font-size:11px;color:#6b7280">{resumo}</span>
+        </button>"""
+
+        yvr_card = '<p style="color:#6b7280">Sem resultados nesta run.</p>'
+        if yvr_voos:
+            b = yvr_voos[0]
+            yvr_card = f"""
+            <div style="background:#ecfccb;border:2px solid #84cc16;border-radius:8px;padding:16px;margin-bottom:16px">
+                <h3 style="margin:0 0 8px 0">🏅 MELHOR OFERTA YVR→SSA</h3>
+                Ida <b>{b['data_ida']}</b> · Volta <b>{b['data_volta']}</b> ·
+                <b style="color:#1d4ed8;font-size:18px">R$ {b['preco']:,.2f}</b> (ida e volta) ·
+                {b['dur_fmt']} · <b>{b['cia']}</b><br>
+                <a href="{b['url_google']}" target="_blank" style="color:#1a73e8;font-weight:bold">Google Flights</a>
+                &nbsp;·&nbsp;
+                <a href="{b['url_kayak']}" target="_blank" style="color:#6b7280">Kayak</a>
+            </div>"""
+
+        linhas = ""
+        for v in yvr_voos:
+            cor_preco = "#22c55e" if yvr_abaixo_alerta(v["preco"]) else "#ef4444"
+            linhas += f"""
+            <tr>
+                <td><b>{v['data_ida']}</b></td>
+                <td><b>{v['data_volta']}</b></td>
+                <td><b style="color:{cor_preco};font-size:16px">R$ {v['preco']:,.2f}</b></td>
+                <td>{v['dur_fmt']}</td>
+                <td>{v['cia']}</td>
+                <td>{v['paradas']}</td>
+                <td>{v['partida'][-5:]}</td>
+                <td>{v['chegada'][-5:]}</td>
+                <td><span style="color:{cor_classif(v['classif'])};font-weight:bold;font-size:11px">{v['classif']}</span></td>
+                <td><a href="{v['url_google']}" target="_blank" style="font-size:11px;color:#1a73e8">Google</a> ·
+                    <a href="{v['url_kayak']}" target="_blank" style="font-size:11px;color:#6b7280">Kayak</a></td>
+            </tr>"""
+
+        abas_conteudo += f"""
+        <div id="tab-yvr" class="tab-content {ativo}">
+            <h2 style="color:#1e3a5f;margin:0 0 4px 0">✈️ Vancouver (YVR) → Salvador (SSA) · ida e volta · Econômica</h2>
+            <p style="color:#6b7280;font-size:12px;margin:0 0 12px 0">
+                Ida {YVR_DATAS_IDA[0]} a {YVR_DATAS_IDA[-1]} · Volta {YVR_DATAS_VOLTA[0]} a {YVR_DATAS_VOLTA[-1]} ·
+                menor preço, sem filtro de paradas/duração · chegada em SSA 08h-21h ·
+                <b>Alerta: USD 1.700 / BRL 6.000</b> (cotação usada: R$ {YVR_COTACAO_USD_BRL:.2f})
+            </p>
+            {yvr_card}
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead><tr style="background:#1e3a5f;color:white">
+                    <th style="padding:10px;text-align:left">Ida</th>
+                    <th style="padding:10px;text-align:left">Volta</th>
+                    <th style="padding:10px;text-align:left">Preço (BRL)<br><span style="font-size:10px;color:#9ca3af">ida e volta</span></th>
+                    <th style="padding:10px;text-align:left">Duração<br><span style="font-size:10px;color:#9ca3af">ida</span></th>
+                    <th style="padding:10px;text-align:left">Cia</th>
+                    <th style="padding:10px;text-align:left">Paradas</th>
+                    <th style="padding:10px;text-align:left">Partida YVR</th>
+                    <th style="padding:10px;text-align:left">Chegada SSA</th>
+                    <th style="padding:10px;text-align:left">Horário</th>
+                    <th style="padding:10px;text-align:left">Links</th>
+                </tr></thead>
+                <tbody>{linhas}</tbody>
+            </table>
+        </div>"""
+
     melhor_card = ""
     if melhor_global:
         m = melhor_global
@@ -549,7 +726,7 @@ def executar():
     print(f"\n{'='*60}")
     print(f"  RUN: {run_atual}")
     print(f"  Destinos: GRX, ALC, AGP | Classes: Eco + Exec | {len(DATAS)} datas")
-    print(f"  Total chamadas: {len(DESTINOS) * len(DATAS) * len(CLASSES)}")
+    print(f"  Total chamadas: {len(DESTINOS) * len(DATAS) * len(CLASSES)} + {len(YVR_DATAS_IDA) * len(YVR_DATAS_VOLTA)} YVR→SSA")
     print(f"{'='*60}")
 
     conn = init_db()
@@ -597,7 +774,13 @@ def executar():
     else:
         resumo = "sem resultados"
 
-    html = gerar_html(voos_por_companhia, comparativo)
+    yvr_voos = executar_yvr()
+    for v in yvr_voos:
+        salvar_voo_yvr(conn, run_atual, v)
+    if yvr_voos:
+        resumo += f" | YVR→SSA R$ {yvr_voos[0]['preco']:,.0f}"
+
+    html = gerar_html(voos_por_companhia, comparativo, yvr_voos)
     enviar_email(html, resumo)
     conn.close()
     print(f"\n  ✅ {resumo}")

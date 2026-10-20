@@ -32,6 +32,18 @@
 - Agenda: dia 1 e dia 15 de cada mês, 08:00 (BRT) — ver "Problemas conhecidos" #2
 - Total chamadas/run: 3 destinos × 17 datas × 2 classes = **102 chamadas** (≈204/mês com 2 runs, dentro da quota gratuita SerpApi de 250)
 
+## Rota extra: YVR → SSA (aba "YVR→SSA")
+- Vancouver (YVR) → Salvador (SSA), **ida e volta** (`type=1`), só Econômica (`travel_class=1`), moeda BRL
+- Ida: 2026-12-20, 21, 22, 23 · Volta: 2027-01-05, 06, 07 → **12 combinações/run** (`executar_yvr()`, sleep 1.2s entre chamadas)
+- Critério: **menor preço vence** — SEM filtro de paradas/duração (usuário quer o mais barato, independente de escalas)
+- Filtro de chegada 08h-21h aplicado só na chegada da IDA em SSA
+- Preço = total ida e volta (SerpApi retorna os voos de ida com o preço da viagem completa); duração/horários/cia são da ida
+- Alerta: **USD 1.700 OU BRL 6.000** (o que disparar primeiro). Preço em verde se abaixo de qualquer um, vermelho se acima dos dois. Conversão USD usa `YVR_COTACAO_USD_BRL` (default 5.40, override via `COTACAO_USD_BRL` no `.env`)
+- Constantes: `YVR_DATAS_IDA`, `YVR_DATAS_VOLTA`, `YVR_PRECO_ALERTA_BRL`, `YVR_PRECO_ALERTA_USD`
+- Links: Google Flights + Kayak (sem deep link de companhia)
+- SQLite: tabela separada `yvr_voos` — id, run_date, data_ida, data_volta, preco, dur_min, partida, chegada, cia, paradas, classif, score, url_google, url_kayak
+- Chamadas: 102 Espanha + 12 YVR = **114/run** → ×2 runs/mês = **228/mês**, ainda dentro da quota de 250
+
 ## Margem de bagagem despachada (23kg)
 SerpApi retorna apenas a tarifa Light (sem bagagem). Para estimar o preço final com bagagem, adicionamos uma margem por companhia em MARGEM_BAGAGEM_ECO. Executiva normalmente já inclui bagagem, então margem = 0.
 
@@ -72,7 +84,7 @@ streamlit run dashboard.py
 
 ## Problemas conhecidos
 1. Email Gmail nunca funcionou — precisa App Password válido no `.env`
-2. Limite SerpApi 250/mês — 102 por run inviabiliza rodar toda semana (102×4=408, estoura). Decisão atual: rodar **dia 1 e dia 15 de cada mês** (~204/mês, dentro da quota gratuita) em vez de semanalmente
+2. Limite SerpApi 250/mês — 102 por run inviabiliza rodar toda semana (102×4=408, estoura). Decisão atual: rodar **dia 1 e dia 15 de cada mês** (~204/mês só Espanha; 228/mês com YVR→SSA, dentro da quota gratuita) em vez de semanalmente. Margem restante: 22 chamadas/mês — qualquer rota nova precisa caber nisso
 3. PC precisa estar ligado no dia do run se rodando localmente (mitigado pelo workflow do GitHub Actions, que roda na nuvem independente do PC)
 
 ## Próximos passos sugeridos

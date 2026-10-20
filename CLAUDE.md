@@ -22,7 +22,7 @@
 ## Configuração
 - Origem: SSA
 - Destinos: GRX (Granada), ALC (Alicante), AGP (Málaga/Nerja)
-- Período: 2026-10-15 a 2026-10-31 (17 datas)
+- Período: 2027-02-20 a 2027-03-08 (17 datas)
 - Classes: Econômica + Executiva
 - MAX_PARADAS: 2
 - DURACAO_MAX_HORAS: 24 (voos acima de 24h são descartados)

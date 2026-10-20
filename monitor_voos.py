@@ -28,10 +28,10 @@ PENALIDADE_TERRESTRE = {
 }
 
 DATAS = [
-    "2026-10-15","2026-10-16","2026-10-17","2026-10-18","2026-10-19",
-    "2026-10-20","2026-10-21","2026-10-22","2026-10-23","2026-10-24",
-    "2026-10-25","2026-10-26","2026-10-27","2026-10-28","2026-10-29",
-    "2026-10-30","2026-10-31",
+    "2027-02-20", "2027-02-21", "2027-02-22", "2027-02-23", "2027-02-24",
+    "2027-02-25", "2027-02-26", "2027-02-27", "2027-02-28",
+    "2027-03-01", "2027-03-02", "2027-03-03", "2027-03-04", "2027-03-05",
+    "2027-03-06", "2027-03-07", "2027-03-08",
 ]
 
 # travel_class do SerpApi: 1=Economy, 2=Premium economy, 3=Business, 4=First
@@ -659,7 +659,7 @@ a {{ text-decoration:none }} a:hover {{ text-decoration:underline }}
 </style></head><body>
 
 <h1>✈️ Monitor SSA → Granada / Alicante / Málaga (Nerja)</h1>
-<p style="color:#6b7280">Outubro 2026: {DATAS[0]} a {DATAS[-1]} | Atualizado: <b>{agora}</b> | Alerta: R$ {PRECO_ALERTA:,.2f}</p>
+<p style="color:#6b7280">Fev/Mar 2027: {DATAS[0]} a {DATAS[-1]} | Atualizado: <b>{agora}</b> | Alerta: R$ {PRECO_ALERTA:,.2f}</p>
 
 <div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:6px;padding:10px;margin:12px 0;font-size:12px;color:#78350f">
 ℹ️ <b>Sobre os preços:</b> O valor "base" é a tarifa Light/Discount (mochila de mão apenas).
